@@ -88,6 +88,20 @@ def elevation_calculator(slope_breaks,long_slopes,long_grid,ds_elev):
         all_elev.append(elev_betn_breaks)
     return all_elev
 
+def Exner1D(long_grids:np.array, del_X,del_T, qs:np.array,  zo: np.array,qo = 0 ,lam = 0):
+#Exner equation 1D
+    nx = len(long_grids)
+    zn = []
+    for j in range(nx):
+        if j == 0:
+            znew = zo[j]+ (qo*del_T -(del_T/del_X)*(qs[j+1]-qs[j]))/(1-lam)
+        elif j == nx-1:
+            znew = zo[j]+ (qo*del_T-(del_T/del_X)*(qs[j]-qs[j-1]))/(1-lam)
+        else:
+            znew = zo[j]+ (qo*del_T-(del_T/(2*del_X))*(qs[j+1]-qs[j-1]))/(1-lam)
+        zn.append(znew)
+    return np.array(zn)
+
 
 class BackwaterAnalysis():
     def __init__(self, length_of_channel:float,
@@ -101,15 +115,18 @@ class BackwaterAnalysis():
                         initial_depth: float,
                         hzslope:float,
                         boundary: np.array,
+                        spgr = 2.65,
                         subcritical = True):
         self.Xsec = ChannelSection(width = width, hzslope=hzslope)
 
         self.subcritical = subcritical
         self.boundary = boundary
         self.initial_depth = initial_depth
+        self.d50 = d50
+        self.spgr = spgr
         
         self.n = strickler_formula(d50=d50)
-        self.hc = critical_depth_allsec(Q, XSection=self.Xsec)
+        self.hc = critical_depth(Q, XSection=self.Xsec)
 
         self.long_grid = make_grid(length_of_channel= length_of_channel, del_X= del_X)
         self.discharge = np.full_like(self.long_grid,Q)
@@ -127,7 +144,7 @@ class BackwaterAnalysis():
         self.bed_elevation = self.bed_elevation[::-1]# reversing the order of array
         self.bed_elevation = np.flip(np.unique([element for sublist in self.bed_elevation for element in sublist])) #flatten the 2d array, remove overlap and make series from us to ds
 
-    def depth_solver(self,max_iter = 500,tol = 1e-18):
+    def depth_solver(self,max_iter = 500,tol = 1e-10,updated_bed_elevation = None, exner = False):
         if self.subcritical:
             if self.boundary[0] == 'default':
                 d_bc = self.hc
@@ -153,7 +170,10 @@ class BackwaterAnalysis():
             kinetic_head = pow(velocity,2)/ (2*9.81)
             specific_energy = flow_depth + kinetic_head
             energy_slope = pow(self.roughness,2) * pow(self.discharge,2) / (pow(area,2)*pow(Rh,4/3))
-            total_head = specific_energy + self.bed_elevation
+            if exner:
+                total_head = specific_energy + updated_bed_elevation
+            else:
+                total_head = specific_energy + self.bed_elevation
 
             sq_tot_cost = []
             for i in range(len(total_head)-1):
@@ -219,6 +239,15 @@ class BackwaterAnalysis():
         Sf = pow(self.roughness,2) *pow(self.discharge,2) / (pow(self.Xsec.updateArea(flow_depth),2)
                                                               *pow(self.Xsec.updateArea(flow_depth)/self.Xsec.updateWPerimeter(flow_depth),4/3))
         return 9810 * Rh * Sf
+    
+    def shields_parameter(self,bed_shear: np.array):
+        return bed_shear/(9810* (self.spgr-1)*self.d50)
+    
+    def Einstein_parameter(self,shields_parameter:np.array):
+        return 40* pow(shields_parameter,1.5)
+    
+    def sediment_transport_rate(self,q_star:np.array):
+        return q_star* math.sqrt(9.81*(self.spgr-1)*self.d50)*self.d50
     
     def display_plot(self,values:np.array,combined= False):
         plt.plot(self.long_grid, self.bed_elevation,label = 'z', color = 'black')
